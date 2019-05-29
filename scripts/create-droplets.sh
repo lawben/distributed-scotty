@@ -24,7 +24,7 @@ function create_init_script {
     local JAVA_ARGS=${@:2}
     cat "$INIT_SCRIPT_FILE" > ${FILE_NAME}
     echo -e "\n" >> ${FILE_NAME}
-    echo "echo \"java -cp \$CLASSPATH com.github.lawben.disco.executables.$CLASS_NAME ${JAVA_ARGS} &\" > ~/run.sh" >> ${FILE_NAME}
+    echo "echo \"java -cp \\\$CLASSPATH com.github.lawben.disco.executables.$CLASS_NAME ${JAVA_ARGS} &\" > ~/run.sh" >> ${FILE_NAME}
     echo "echo \"echo \\\$! > /tmp/RUN_PID\" >> ~/run.sh" >> ${FILE_NAME}
     echo "chmod +x ~/run.sh" >> ${FILE_NAME}
     echo ${FILE_NAME}
