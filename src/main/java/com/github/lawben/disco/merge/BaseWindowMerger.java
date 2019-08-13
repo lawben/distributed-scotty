@@ -1,7 +1,5 @@
 package com.github.lawben.disco.merge;
 
-import static com.github.lawben.disco.Event.NO_KEY;
-
 import com.github.lawben.disco.aggregation.DistributedAggregateWindowState;
 import com.github.lawben.disco.aggregation.FunctionWindowAggregateId;
 import com.github.lawben.disco.aggregation.WindowFunctionKey;
@@ -13,6 +11,7 @@ import de.tub.dima.scotty.slicing.state.AggregateState;
 import de.tub.dima.scotty.state.StateFactory;
 import de.tub.dima.scotty.state.memory.MemoryStateFactory;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -29,10 +28,12 @@ public abstract class BaseWindowMerger<AggType> implements WindowMerger<AggType>
     protected final Map<FunctionWindowAggregateId,
             Map<Integer, List<DistributedAggregateWindowState<AggType>>>> windowAggregates;
 
-    protected final Set<WindowFunctionKey> sessionWindows;
+    protected final Set<Long> sessionWindows;
     protected final Map<WindowFunctionKey, List<DistributedAggregateWindowState<AggType>>> currentSessions;
     protected final Map<Integer, Map<WindowFunctionKey, Long>> childLastSessionStarts;
     protected final Map<WindowFunctionKey, Integer> lastReceivedChild;
+    protected final Map<WindowFunctionKey, List<FunctionWindowAggregateId>> newSessionStarts;
+    private Map<WindowFunctionKey, Long> sessionEnds;
 
     public BaseWindowMerger(int numInputs, List<Window> windows, List<AggregateFunction> aggFunctions) {
         this.numInputs = numInputs;
@@ -41,10 +42,12 @@ public abstract class BaseWindowMerger<AggType> implements WindowMerger<AggType>
         this.receivedWindows = new HashMap<>();
         this.windowAggregates = new HashMap<>();
 
-        this.sessionWindows = this.prepareSessionWindows(windows, aggFunctions);
+        this.sessionWindows = this.prepareSessionWindows(windows);
         this.currentSessions = new HashMap<>();
         this.childLastSessionStarts = new HashMap<>();
         this.lastReceivedChild = new HashMap<>();
+        this.newSessionStarts = new HashMap<>();
+        this.sessionEnds = new HashMap<>();
     }
 
     public void initializeSessionState(List<Integer> childIds) {
@@ -99,16 +102,11 @@ public abstract class BaseWindowMerger<AggType> implements WindowMerger<AggType>
         return finalWindows;
     }
 
-    protected Set<WindowFunctionKey> prepareSessionWindows(List<Window> windows, List<AggregateFunction> aggregateFunctions) {
-        Set<WindowFunctionKey> sessionWindows = new HashSet<>();
+    protected Set<Long> prepareSessionWindows(List<Window> windows) {
+        Set<Long> sessionWindows = new HashSet<>();
         for (Window window : windows) {
             if (window instanceof SessionWindow) {
-                SessionWindow sw = (SessionWindow) window;
-                long windowId = sw.getWindowId();
-                for (int functionId = 0; functionId < aggregateFunctions.size(); functionId++) {
-                    WindowFunctionKey windowFunctionKey = new WindowFunctionKey(windowId, functionId, NO_KEY);
-                    sessionWindows.add(windowFunctionKey);
-                }
+                sessionWindows.add(window.getWindowId());
             }
         }
         return sessionWindows;
@@ -119,16 +117,18 @@ public abstract class BaseWindowMerger<AggType> implements WindowMerger<AggType>
         List<DistributedAggregateWindowState<AggType>> keyedStates =
                 currentSessions.computeIfAbsent(windowFunctionKey, key -> new ArrayList<>());
 
+        final int key = functionWindowAggId.getKey();
         final int childId = functionWindowAggId.getChildId();
-        Map<WindowFunctionKey, Long> childStarts =
-                childLastSessionStarts.computeIfAbsent(childId, id -> new HashMap<>());
-        childStarts.put(windowFunctionKey, functionWindowAggId.getWindowId().getWindowStartTimestamp());
+        final long windowId = windowFunctionKey.getWindowId();
+        WindowFunctionKey windowKey = new WindowFunctionKey(windowId, key);
+        this.childLastSessionStarts.get(childId).put(windowKey, functionWindowAggId.getWindowId().getWindowStartTimestamp());
 
         DistributedAggregateWindowState<AggType> newSession = createNewSession(preAggregate, functionWindowAggId);
         if (keyedStates.isEmpty()) {
             // No sessions for this key exist. Create new session.
             keyedStates.add(newSession);
             lastReceivedChild.put(windowFunctionKey, childId);
+            newSessionStarts.computeIfAbsent(windowKey, id -> new ArrayList<>()).add(functionWindowAggId);
             return;
         }
 
@@ -175,33 +175,50 @@ public abstract class BaseWindowMerger<AggType> implements WindowMerger<AggType>
         } else {
             // No merged happened. Just add new session.
             keyedStates.add(newSession);
+            newSessionStarts.get(windowKey).add(functionWindowAggId);
         }
 
         // Check every session to see if it has ended globally through the new session's child-start update.
-        List<DistributedAggregateWindowState<AggType>> triggeredSession = new ArrayList<>();
-        for (DistributedAggregateWindowState<AggType> session : keyedStates) {
-            final boolean hasEnded = sessionHasGloballyEnded(session.getFunctionWindowId(), windowFunctionKey,
-                    childId, functionWindowAggId.getWindowId().getWindowStartTimestamp());
-
-            if (hasEnded) {
-                FunctionWindowAggregateId keylessId = functionWindowAggId.keylessCopy();
-                Map<Integer, List<DistributedAggregateWindowState<AggType>>> keyedFinalStates =
-                        windowAggregates.computeIfAbsent(keylessId, id -> new HashMap<>());
-                List<DistributedAggregateWindowState<AggType>> finalStateList =
-                        keyedFinalStates.computeIfAbsent(windowFunctionKey.getKey(), k -> new ArrayList<>());
-                finalStateList.add(session);
-                triggeredSession.add(session);
-            } else {
-                break;
-            }
-        }
-
-        keyedStates.removeAll(triggeredSession);
+        checkSessionWindowsTriggered(functionWindowAggId, keyedStates);
         lastReceivedChild.put(windowFunctionKey, childId);
     }
 
+    private void checkSessionWindowsTriggered(FunctionWindowAggregateId functionWindowAggId,
+            List<DistributedAggregateWindowState<AggType>> sessions) {
+        int key = functionWindowAggId.getKey();
+        int childId = functionWindowAggId.getChildId();
+        long newStartTimestamp = functionWindowAggId.getWindowId().getWindowStartTimestamp();
+
+        long lastSessionEnd = Long.MAX_VALUE;
+        List<DistributedAggregateWindowState<AggType>> triggeredSession = new ArrayList<>();
+        for (DistributedAggregateWindowState<AggType> session : sessions) {
+            final boolean hasEnded = sessionHasGloballyEnded(session.getFunctionWindowId(), key, childId, newStartTimestamp);
+
+            if (!hasEnded) {
+                // If this session has not ended, newer sessions cannot have ended.
+                break;
+            }
+
+            FunctionWindowAggregateId keylessId = functionWindowAggId.keylessCopy();
+            Map<Integer, List<DistributedAggregateWindowState<AggType>>> keyedFinalStates =
+                    windowAggregates.computeIfAbsent(keylessId, id -> new HashMap<>());
+            List<DistributedAggregateWindowState<AggType>> finalStateList =
+                    keyedFinalStates.computeIfAbsent(key, k -> new ArrayList<>());
+            finalStateList.add(session);
+            triggeredSession.add(session);
+            lastSessionEnd = session.getWindowAggregateId().getWindowEndTimestamp();
+        }
+
+        // If we add long max_value again, we know that there is a session running and we should not send session
+        // starts to our parent.
+        WindowFunctionKey windowKey = WindowFunctionKey.fromFunctionlessFunctionWindowId(functionWindowAggId);
+        sessionEnds.put(windowKey, lastSessionEnd);
+
+        sessions.removeAll(triggeredSession);
+    }
+
     private boolean sessionHasGloballyEnded(FunctionWindowAggregateId session,
-            WindowFunctionKey windowFunctionKey, int currentChildId, long currentStart) {
+            int key, int currentChildId, long currentStart) {
         final int oldSessionChildId = session.getChildId();
         final long sessionEnd = session.getWindowId().getWindowEndTimestamp();
 
@@ -209,17 +226,18 @@ public abstract class BaseWindowMerger<AggType> implements WindowMerger<AggType>
             return false;
         }
 
-        for (Map.Entry<Integer, Map<WindowFunctionKey, Long>> childAllStarts : childLastSessionStarts.entrySet()) {
-            Integer childStartId = childAllStarts.getKey();
-            if (childStartId.equals(oldSessionChildId) || childStartId.equals(currentChildId)) {
+        for (var childAllStarts : childLastSessionStarts.entrySet()) {
+            int childStartId = childAllStarts.getKey();
+            if (childStartId == oldSessionChildId || childStartId == currentChildId) {
                 // We can ignore the last child's session, because that is the one we are 'ending'.
-                // The session of the calling child obviously ends the session.
+                // The session of the calling child trivially ends the session.
                 continue;
             }
 
             // If we have never seen at session for this key by a child, we assume it is still coming.
-            long lastStartForChild = childAllStarts.getValue().getOrDefault(windowFunctionKey, -1L);
-            if (sessionEnd > lastStartForChild) {
+            WindowFunctionKey windowKey = new WindowFunctionKey(session.getWindowId().getWindowId(), key);
+            long lastStartForChild = childAllStarts.getValue().getOrDefault(windowKey, -1L);
+            if (lastStartForChild < sessionEnd) {
                 return false;
             }
         }
@@ -263,8 +281,74 @@ public abstract class BaseWindowMerger<AggType> implements WindowMerger<AggType>
     }
 
     protected boolean isSessionWindow(FunctionWindowAggregateId functionWindowAggId) {
-        FunctionWindowAggregateId keylessId = functionWindowAggId.keylessCopy();
-        final WindowFunctionKey windowFunctionKey = WindowFunctionKey.fromFunctionWindowId(keylessId);
-        return sessionWindows.contains(windowFunctionKey);
+        long windowId = functionWindowAggId.getWindowId().getWindowId();
+        return sessionWindows.contains(windowId);
+    }
+
+    @Override
+    public Optional<FunctionWindowAggregateId> registerSessionStart(FunctionWindowAggregateId sessionStartId) {
+        WindowFunctionKey windowKey = WindowFunctionKey.fromFunctionWindowId(sessionStartId);
+        int currentChildId = sessionStartId.getChildId();
+        long sessionStart = sessionStartId.getWindowId().getWindowStartTimestamp();
+        this.childLastSessionStarts.get(currentChildId).put(windowKey, sessionStart);
+
+        Optional<FunctionWindowAggregateId> minNewSession = Optional.empty();
+        final long lastSessionEndForKey = sessionEnds.getOrDefault(windowKey, -1L);
+        long minNewSessionStart = Long.MAX_VALUE;
+        boolean allChildrenHaveNewerSessions = true;
+        for (var sessionStarts : childLastSessionStarts.entrySet()) {
+            long sessionStartForKey = sessionStarts.getValue().getOrDefault(windowKey, 0L);
+            if (sessionStartForKey < lastSessionEndForKey) {
+                allChildrenHaveNewerSessions = false;
+                break;
+            }
+            minNewSessionStart = Math.min(minNewSessionStart, sessionStartForKey);
+        }
+
+        if (allChildrenHaveNewerSessions) {
+            int key = windowKey.getKey();
+            WindowAggregateId windowId =
+                    new WindowAggregateId(windowKey.getWindowId(), minNewSessionStart, minNewSessionStart);
+            FunctionWindowAggregateId minNewSessionId = new FunctionWindowAggregateId(windowId, 0, currentChildId, key);
+            minNewSession = Optional.of(minNewSessionId);
+        }
+
+        // Check every session to see if it has ended globally through the new session's child-start update.
+        List<DistributedAggregateWindowState<AggType>> keyedStates =
+                currentSessions.computeIfAbsent(windowKey, k -> new ArrayList<>());
+        checkSessionWindowsTriggered(sessionStartId, keyedStates);
+        return minNewSession;
+    }
+
+
+    public List<FunctionWindowAggregateId> getSessionStarts(FunctionWindowAggregateId lastSession) {
+        long windowId = lastSession.getWindowId().getWindowId();
+        if (sessionWindows.isEmpty() || !sessionWindows.contains(windowId)) {
+            // There are no session windows or this isn't a session, so we don't care about session starts
+            return new ArrayList<>();
+        }
+
+        List<FunctionWindowAggregateId> newSession = new ArrayList<>();
+
+        WindowFunctionKey windowKey = new WindowFunctionKey(windowId, lastSession.getKey());
+        long lastSessionEnd = lastSession.getWindowId().getWindowEndTimestamp();
+
+        List<FunctionWindowAggregateId> sessionStarts = newSessionStarts.getOrDefault(windowKey, new ArrayList<>());
+        sessionStarts.sort(Comparator.comparingLong(id -> id.getWindowId().getWindowStartTimestamp()));
+
+        int clearIdx = sessionStarts.size();
+        for (int sessionStartIdx = 0; sessionStartIdx < sessionStarts.size(); sessionStartIdx++) {
+            FunctionWindowAggregateId session = sessionStarts.get(sessionStartIdx);
+            if (session.getWindowId().getWindowStartTimestamp() > lastSessionEnd) {
+                newSession.add(session);
+                clearIdx = sessionStartIdx + 1;
+                break;
+            }
+        }
+
+        if (!newSession.isEmpty()) {
+            sessionStarts.subList(0, clearIdx).clear();
+        }
+        return newSession;
     }
 }

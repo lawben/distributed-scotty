@@ -18,6 +18,7 @@ import de.tub.dima.scotty.core.windowType.Window;
 import de.tub.dima.scotty.core.windowType.WindowMeasure;
 import de.tub.dima.scotty.slicing.state.AggregateWindowState;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
 import java.util.stream.Collectors;
@@ -135,5 +136,29 @@ public class AggregateMerger {
             default:
                 throw new IllegalArgumentException("Unknown aggregate type: " + aggregateType);
         }
+    }
+
+    public List<Object> registerSessionStart(FunctionWindowAggregateId sessionStartId) {
+        List<WindowMerger> windowMergers =
+                Arrays.asList(distributiveWindowMerger, algebraicWindowMerger, holisticWindowMerger);
+
+        List<Object> triggeredSessions = new ArrayList<>();
+        for (WindowMerger<?> windowMerger : windowMergers) {
+            Optional<FunctionWindowAggregateId> newSessionId = windowMerger.registerSessionStart(sessionStartId);
+            newSessionId.ifPresent(triggeredSessions::add);
+            Optional<FunctionWindowAggregateId> triggerId = windowMerger.checkWindowComplete(sessionStartId);
+            triggerId.ifPresent(functionWindowAggregateId -> triggeredSessions
+                    .addAll(windowMerger.triggerFinalWindow(functionWindowAggregateId)));
+        }
+
+        return triggeredSessions;
+    }
+
+    public List<FunctionWindowAggregateId> getSessionStarts(FunctionWindowAggregateId lastSession) {
+        List<FunctionWindowAggregateId> sessionStarts = new ArrayList<>();
+        sessionStarts.addAll(distributiveWindowMerger.getSessionStarts(lastSession));
+        sessionStarts.addAll(algebraicWindowMerger.getSessionStarts(lastSession));
+        sessionStarts.addAll(holisticWindowMerger.getSessionStarts(lastSession));
+        return sessionStarts;
     }
 }

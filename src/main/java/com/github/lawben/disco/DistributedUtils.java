@@ -39,10 +39,10 @@ public class DistributedUtils {
     public static final String ALGEBRAIC_STRING = "ALG";
     public static final String HOLISTIC_STRING = "HOL";
 
-    public static final String WINDOW_COMPLETE = "C";
-    public static final String WINDOW_PARTIAL = "P";
+    public static final long MAX_LATENESS = 0L;
 
     public static final String EVENT_STRING = "E";
+    public static final String CONTROL_STRING = "C";
 
     public static byte[] objectToBytes(Object object) {
         if (object instanceof Integer) {
