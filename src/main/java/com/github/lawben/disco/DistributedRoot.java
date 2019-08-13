@@ -6,6 +6,7 @@ import static com.github.lawben.disco.DistributedUtils.MAX_LATENESS;
 import static com.github.lawben.disco.DistributedUtils.STREAM_END;
 
 import com.github.lawben.disco.aggregation.DistributedAggregateWindowState;
+import com.github.lawben.disco.merge.FinalWindowsAndSessionStarts;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
@@ -88,13 +89,15 @@ public class DistributedRoot implements Runnable {
                     break;
                 }
                 case CONTROL_STRING: {
-                    windowResults = nodeImpl.handleControlInput().stream()
+                    FinalWindowsAndSessionStarts controlResults = nodeImpl.handleControlInput();
+                    windowResults = controlResults.getFinalWindows().stream()
                             .map(state -> nodeImpl.aggregateMerger.convertAggregateToWindowResult(state))
                             .collect(Collectors.toList());
                     break;
                 }
                 default: {
-                    windowResults = nodeImpl.processWindowAggregates().stream()
+                    FinalWindowsAndSessionStarts processingResults = nodeImpl.processWindowAggregates();
+                    windowResults = processingResults.getFinalWindows().stream()
                             .map(state -> nodeImpl.aggregateMerger.convertAggregateToWindowResult(state))
                             .collect(Collectors.toList());
                 }

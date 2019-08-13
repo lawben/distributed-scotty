@@ -9,6 +9,7 @@ import static com.github.lawben.disco.DistributedUtils.createWindowsFromString;
 import static com.github.lawben.disco.Event.NO_KEY;
 import static com.github.lawben.disco.aggregation.FunctionWindowAggregateId.NO_CHILD_ID;
 
+import com.github.lawben.disco.aggregation.AlgebraicAggregateFunction;
 import com.github.lawben.disco.aggregation.AlgebraicMergeFunction;
 import com.github.lawben.disco.aggregation.AlgebraicPartial;
 import com.github.lawben.disco.aggregation.AlgebraicWindowAggregate;
@@ -16,8 +17,10 @@ import com.github.lawben.disco.aggregation.DistributedAggregateWindowState;
 import com.github.lawben.disco.aggregation.DistributiveAggregateFunction;
 import com.github.lawben.disco.aggregation.DistributiveWindowAggregate;
 import com.github.lawben.disco.aggregation.FunctionWindowAggregateId;
+import com.github.lawben.disco.aggregation.HolisticAggregateFunction;
 import com.github.lawben.disco.aggregation.HolisticMergeWrapper;
 import com.github.lawben.disco.merge.AggregateMerger;
+import com.github.lawben.disco.merge.FinalWindowsAndSessionStarts;
 import de.tub.dima.scotty.core.WindowAggregateId;
 import de.tub.dima.scotty.core.windowFunction.AggregateFunction;
 import de.tub.dima.scotty.core.windowType.Window;
@@ -83,14 +86,12 @@ public class DistributedNode {
     }
 
     public void processAndSendWindowAggregates() {
-        List<DistributedAggregateWindowState> preAggregatedWindows = processWindowAggregates();
-        sendPreAggregatedWindowsToParent(preAggregatedWindows);
-        preAggregatedWindows.stream()
-                .map(state -> aggregateMerger.getSessionStarts(state.getFunctionWindowId()))
-                .forEach(newSessionList -> newSessionList.forEach(this::sendSessionStartToParent));
+        FinalWindowsAndSessionStarts finalWindowsAndSessionStarts = processWindowAggregates();
+        sendPreAggregatedWindowsToParent(finalWindowsAndSessionStarts.getFinalWindows());
+        sendSessionStartsToParent(finalWindowsAndSessionStarts.getNewSessionStarts());
     }
 
-    public List<DistributedAggregateWindowState> processWindowAggregates() {
+    public FinalWindowsAndSessionStarts processWindowAggregates() {
         String rawFunctionWindowAggId = this.dataPuller.recvStr(ZMQ.DONTWAIT);
         int numAggregates = Integer.parseInt(dataPuller.recvStr(ZMQ.DONTWAIT));
 
@@ -105,13 +106,15 @@ public class DistributedNode {
         System.out.println(nodeString("Processing: " + functionWindowAggId + " with " + rawPreAggregates));
         List<DistributedAggregateWindowState> finalWindows =
                 this.aggregateMerger.processWindowAggregates(functionWindowAggId, rawPreAggregates);
+        List<FunctionWindowAggregateId> sessionStarts = aggregateMerger.getSessionStarts(functionWindowAggId);
+        return new FinalWindowsAndSessionStarts(finalWindows, sessionStarts);
+    }
 
-        if (windowPusher != null) {
-            List<FunctionWindowAggregateId> sessionStarts = aggregateMerger.getSessionStarts(functionWindowAggId);
-            sendSessionStartsToParent(sessionStarts);
-        }
-
-        return finalWindows;
+    public FinalWindowsAndSessionStarts handleControlInput() {
+        String controlMsg = dataPuller.recvStr(ZMQ.DONTWAIT);
+        FunctionWindowAggregateId sessionStartId = DistributedUtils.stringToFunctionWindowAggId(controlMsg);
+        System.out.println(nodeString("Registering session start " + sessionStartId));
+        return aggregateMerger.registerSessionStart(sessionStartId);
     }
 
     public void sendSessionStartsToParent(List<FunctionWindowAggregateId> sessionStarts) {
@@ -122,7 +125,8 @@ public class DistributedNode {
 
     public void sendSessionStartToParent(FunctionWindowAggregateId sessionStart) {
         WindowAggregateId windowAggregateId = sessionStart.getWindowId();
-        FunctionWindowAggregateId fullSessionStartId = new FunctionWindowAggregateId(windowAggregateId, 0, nodeId, sessionStart.getKey());;
+        FunctionWindowAggregateId fullSessionStartId =
+                new FunctionWindowAggregateId(windowAggregateId, 0, nodeId, sessionStart.getKey());
         String sessionMsg = DistributedUtils.functionWindowIdToString(fullSessionStartId);
         sendToParent(Arrays.asList(CONTROL_STRING, sessionMsg));
     }
@@ -256,26 +260,6 @@ public class DistributedNode {
 
         recreateControlListener();
         this.aggregateMerger.initializeSessionStates(childIds);
-    }
-
-    public List<DistributedAggregateWindowState> handleControlInput() {
-        String controlMsg = dataPuller.recvStr(ZMQ.DONTWAIT);
-        FunctionWindowAggregateId sessionStartId = DistributedUtils.stringToFunctionWindowAggId(controlMsg);
-        System.out.println(nodeString("Registering session start " + sessionStartId));
-        List<Object> registerResult = aggregateMerger.registerSessionStart(sessionStartId);
-
-        if (windowPusher != null) {
-            Map<FunctionWindowAggregateId, List<FunctionWindowAggregateId>> newSessions = registerResult.stream()
-                    .filter(obj -> obj instanceof FunctionWindowAggregateId)
-                    .map(obj -> (FunctionWindowAggregateId) obj)
-                    .collect(Collectors.groupingBy(fId -> fId));
-            newSessions.keySet().forEach(this::sendSessionStartToParent);
-        }
-
-        return registerResult.stream()
-                .filter(obj -> obj instanceof DistributedAggregateWindowState)
-                .map(obj -> (DistributedAggregateWindowState) obj)
-                .collect(Collectors.toList());
     }
 
     public WindowingConfig registerAtParent() {

@@ -170,13 +170,14 @@ public class RootTwoMergerFourChildren {
                 "0,120,0", "0,140,5", "0,170,10",
                 "0,400,0", "0,405,5", "0,410,15",
                 "0,550,100", "0,560,0",
-                "0,730,0", "0,930,0" // needed to end previous window
+                "0,730,1",
+                "0,930,0" // needed to end previous window
         };
 
         String[] events1 = {
                 "1,0,1", "1,15,2", "1,30,3",
                 "1,460,15", "1,530,5", "1,590,20",
-                "1,700,0", "1,750,0",
+                "1,700,2", "1,750,3",
                 "1,900,0" // needed to end previous window
         };
 
@@ -184,21 +185,24 @@ public class RootTwoMergerFourChildren {
                  "2,50,10",  "2,75,15",
                 "2,150,10", "2,175,15",
                 "2,450,10", "2,475,15",
-                "2,750,10", "2,950,10" // needed to end previous window
+                "2,750,10",
+                "2,950,10" // needed to end previous window
         };
 
         String[] events3 = {
                  "3,40,10",  "3,65,15",
                 "3,140,10", "3,165,15",
                 "3,440,10", "3,465,15",
-                "3,745,10", "3,950,10" // needed to end previous window
+                "3,745,15",
+                "3,950,10" // needed to end previous window
         };
 
         sendSleepSortedEvents(100, streamSenders, events0, events1, events2, events3);
 
         List<Matcher<? super List<String>>> windowMatchers = Arrays.asList(
                 equalsWindowResult(new FunctionWindowAggregateId(new WindowAggregateId(0,   0, 275), 0),  6),
-                equalsWindowResult(new FunctionWindowAggregateId(new WindowAggregateId(0, 400, 690), 0), 15)
+                equalsWindowResult(new FunctionWindowAggregateId(new WindowAggregateId(0, 400, 690), 0), 15),
+                equalsWindowResult(new FunctionWindowAggregateId(new WindowAggregateId(0, 700, 850), 0),  3)
         );
 
         List<List<String>> windowStrings = receiveWindows(windowMatchers.size(), resultListener);

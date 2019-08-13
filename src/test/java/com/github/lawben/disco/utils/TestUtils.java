@@ -28,7 +28,7 @@ public class TestUtils {
 
     public static int findChildPort() throws IOException {
         int childPort;
-        while ((childPort = Utils.findOpenPort()) > 65536 - 100) {}
+        while ((childPort = Utils.findOpenPort()) > 65536 - STREAM_REGISTER_PORT_OFFSET) {}
         return childPort;
     }
 
@@ -41,6 +41,7 @@ public class TestUtils {
         for (int i = 0; i < numExpectedWindows; i++) {
             windowStrings.add(receiveResult(resultListener));
         }
+        System.out.println("Received window strings: " + windowStrings);
         return windowStrings;
     }
 

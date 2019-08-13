@@ -26,6 +26,7 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Optional;
 import java.util.Random;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -157,6 +158,26 @@ public class DistributedUtils {
                 throw new IllegalArgumentException("No aggFn known for: '" + aggFnString + "'");
             }
         }
+    }
+
+    public static Optional<FunctionWindowAggregateId> getNextSessionStart(
+            List<FunctionWindowAggregateId> sessionStarts, long lastSessionEnd) {
+        sessionStarts.sort(Comparator.comparingLong(id -> id.getWindowId().getWindowStartTimestamp()));
+
+        Optional<FunctionWindowAggregateId> newSession = Optional.empty();
+        int clearIdx = sessionStarts.size();
+        for (int sessionStartIdx = 0; sessionStartIdx < sessionStarts.size(); sessionStartIdx++) {
+            FunctionWindowAggregateId session = sessionStarts.get(sessionStartIdx);
+            if (session.getWindowId().getWindowStartTimestamp() > lastSessionEnd) {
+                newSession = Optional.of(session);
+                clearIdx = sessionStartIdx + 1;
+                break;
+            }
+        }
+        if (newSession.isPresent()) {
+            sessionStarts.subList(0, clearIdx).clear();
+        }
+        return newSession;
     }
 
 

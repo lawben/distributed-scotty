@@ -76,7 +76,7 @@ public class ChildMerger {
     }
 
     public void processElement(int eventValue, long eventTimestamp, int key) {
-        System.out.println(childId + " - PROCESSING: " + eventTimestamp);
+//        System.out.println(childId + " - PROCESSING: " + eventTimestamp);
         DistributedChildSlicer<Integer> perKeySlicer = this.slicerPerKey.computeIfAbsent(key,
                 k -> new DistributedChildSlicer<>(this.windows, this.sliceAggFns));
         perKeySlicer.processElement(eventValue, eventTimestamp);
@@ -98,7 +98,7 @@ public class ChildMerger {
                 FunctionWindowAggregateId sessionStartId = new FunctionWindowAggregateId(windowAggId, 0, childId, key);
                 WindowFunctionKey windowKey = new WindowFunctionKey(windowId, key);
                 newSessionStarts.computeIfAbsent(windowKey, id -> new ArrayList<>()).add(sessionStartId);
-                System.out.println(childId + " - NEW SESSION: " + eventTimestamp);
+//                System.out.println(childId + " - NEW SESSION: " + eventTimestamp);
             }
             keyedSessionEnds.put(key, eventTimestamp);
         }
@@ -156,7 +156,7 @@ public class ChildMerger {
                     new FunctionWindowAggregateId(windowId, functionId, this.childId, key);
 
             if (sessionGaps.containsKey(windowId.getWindowId())) {
-                System.out.println(childId + " - SESSION END: " + windowId.getWindowEndTimestamp());
+//                System.out.println(childId + " - SESSION END: " + windowId.getWindowEndTimestamp());
                 WindowFunctionKey windowKey = new WindowFunctionKey(windowId.getWindowId(), key);
                 this.latestSessionEnds.put(windowKey, windowId.getWindowEndTimestamp());
             }
@@ -205,20 +205,6 @@ public class ChildMerger {
         long lastSessionEnd = lastSession.getWindowId().getWindowEndTimestamp();
 
         List<FunctionWindowAggregateId> sessionStarts = newSessionStarts.get(windowKey);
-        sessionStarts.sort(Comparator.comparingLong(id -> id.getWindowId().getWindowStartTimestamp()));
-
-        Optional<FunctionWindowAggregateId> newSession = Optional.empty();
-        int clearIdx = sessionStarts.size();
-        for (int sessionStartIdx = 0; sessionStartIdx < sessionStarts.size(); sessionStartIdx++) {
-            FunctionWindowAggregateId session = sessionStarts.get(sessionStartIdx);
-            if (session.getWindowId().getWindowStartTimestamp() > lastSessionEnd) {
-               newSession = Optional.of(session);
-               clearIdx = sessionStartIdx + 1;
-               break;
-            }
-        }
-
-        sessionStarts.subList(0, clearIdx).clear();
-        return newSession;
+        return DistributedUtils.getNextSessionStart(sessionStarts, lastSessionEnd);
     }
 }

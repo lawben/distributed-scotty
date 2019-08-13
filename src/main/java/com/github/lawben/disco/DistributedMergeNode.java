@@ -5,6 +5,7 @@ import static com.github.lawben.disco.DistributedUtils.EVENT_STRING;
 import static com.github.lawben.disco.DistributedUtils.STREAM_END;
 
 import com.github.lawben.disco.aggregation.DistributedAggregateWindowState;
+import com.github.lawben.disco.merge.FinalWindowsAndSessionStarts;
 import java.util.List;
 import java.util.Optional;
 import org.zeromq.ZMQ;
@@ -61,7 +62,9 @@ public class DistributedMergeNode implements Runnable {
             }
 
             if (windowOrStreamEnd.equals(CONTROL_STRING)) {
-                nodeImpl.sendPreAggregatedWindowsToParent(nodeImpl.handleControlInput());
+                FinalWindowsAndSessionStarts registerResults = nodeImpl.handleControlInput();
+                nodeImpl.sendPreAggregatedWindowsToParent(registerResults.getFinalWindows());
+                nodeImpl.sendSessionStartsToParent(registerResults.getNewSessionStarts());
                 continue;
             }
 

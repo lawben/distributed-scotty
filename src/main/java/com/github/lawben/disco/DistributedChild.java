@@ -82,9 +82,7 @@ public class DistributedChild implements Runnable {
 
                 System.out.println(nodeImpl.nodeString("Processed " + numEvents + " events in total."));
                 final long watermarkTimestamp = currentEventTime + nodeImpl.watermarkMs;
-                List<DistributedAggregateWindowState> finalWindows =
-                        this.childMerger.processWatermarkedWindows(watermarkTimestamp);
-                nodeImpl.sendPreAggregatedWindowsToParent(finalWindows);
+                handleWatermark(watermarkTimestamp);
                 System.out.println(nodeImpl.nodeString("No more data to come. Ending child worker..."));
                 nodeImpl.endChild();
                 return;
@@ -110,18 +108,22 @@ public class DistributedChild implements Runnable {
         // tuple, process it.
         final long watermarkTimestamp = lastWatermark + nodeImpl.watermarkMs;
         if (currentEventTime >= watermarkTimestamp + MAX_LATENESS) {
-            List<DistributedAggregateWindowState> finalWindows =
-                    this.childMerger.processWatermarkedWindows(watermarkTimestamp);
-
-            nodeImpl.sendPreAggregatedWindowsToParent(finalWindows);
-
-            finalWindows.stream()
-                    .map(state -> childMerger.getNextSessionStart(state.getFunctionWindowId()))
-                    .forEach(newSession -> newSession.ifPresent(nodeImpl::sendSessionStartToParent));
-
-            lastWatermark = watermarkTimestamp;
+            handleWatermark(watermarkTimestamp);
         }
 
+    }
+
+    private void handleWatermark(long watermarkTimestamp) {
+        List<DistributedAggregateWindowState> finalWindows =
+                this.childMerger.processWatermarkedWindows(watermarkTimestamp);
+
+        nodeImpl.sendPreAggregatedWindowsToParent(finalWindows);
+
+        finalWindows.stream()
+                .map(state -> childMerger.getNextSessionStart(state.getFunctionWindowId()))
+                .forEach(newSession -> newSession.ifPresent(nodeImpl::sendSessionStartToParent));
+
+        lastWatermark = watermarkTimestamp;
     }
 
     private boolean registerStreams(final WindowingConfig windowingConfig) {
